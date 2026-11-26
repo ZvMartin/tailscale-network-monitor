@@ -674,13 +674,3 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         console.print("\n[dim cyan]Goodbye.[/dim cyan]\n")
-```[cite: 30]
-
----
-
-### 2. Step-by-Step to Add It on GitHub
-1. Go to the **root** of your `security-engineering-portfolio` repo (`ZvMartin/security-engineering-portfolio`)[cite: 28, 29].
-2. Click **`Add file`** → **`Create new file`**[cite: 28].
-3. In the filename box, type:
-   ```text
-   scripts/tailmon.py
