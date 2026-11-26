@@ -61,6 +61,7 @@ REFRESH_SECONDS = 10          # how often to poll Tailscale API
 PING_TIMEOUT    = 3           # seconds per ping
 METRICS_TIMEOUT = 3           # seconds to fetch /metrics
 METRICS_PORT    = 5252        # Tailscale local metrics port
+TRIGGER_TTL_S   = 60          # seconds to highlight an ONLINE/OFFLINE state trigger
 API_BASE        = "https://api.tailscale.com/api/v2"
 console         = Console()
 
@@ -73,7 +74,6 @@ DEMO_NAMES = [
     "docker-host", "fw-gateway", "dev-box", "sensor-pi-1",
     "sensor-pi-2", "test-vm-win", "jump-host",
 ]
-_demo_name_map = {}
 
 OS_ICONS = {
     "linux": "🐧", "windows": "🪟", "android": "🤖",
@@ -96,7 +96,6 @@ def display_node(real_name: str, real_ip: str, idx: int) -> tuple[str, str]:
     fake_name = DEMO_NAMES[idx % len(DEMO_NAMES)]
     if idx >= len(DEMO_NAMES):
         fake_name = f"{fake_name}-{idx // len(DEMO_NAMES) + 1}"
-    _demo_name_map[real_name] = fake_name
     fake_ip = f"100.64.{(idx // 250) + 1}.{(idx % 250) + 10}"
     return fake_name, fake_ip
 
@@ -104,14 +103,14 @@ def display_node(real_name: str, real_ip: str, idx: int) -> tuple[str, str]:
 # ─────────────────────────────────────────────────
 # SHARED STATE  (written by background threads, read by UI)
 # ─────────────────────────────────────────────────
-ping_results = {}   # ip -> ms float or None
-metrics_data = {}   # ip -> metrics dict
-prev_ts      = {}   # ip -> timestamp of last metrics poll
-state_lock   = threading.Lock()
+ping_results  = {}   # ip -> ms float or None
+metrics_data  = {}   # ip -> metrics dict
+prev_ts       = {}   # ip -> timestamp of last metrics poll
+state_lock    = threading.Lock()
 
-# watch mode: tracks online state per node id across polls
-prev_online  = {}   # node_id -> bool
-watch_events = []   # list of (timestamp, name, label, color)
+# state trigger tracking: records online state and last transition timestamp per node
+prev_online   = {}   # node_id -> bool
+node_triggers = {}   # node_id -> {"label": str, "color": str, "ts": datetime}
 
 
 # ─────────────────────────────────────────────────
@@ -384,27 +383,24 @@ def key_expiry_warning(expires: str, key_expiry_disabled: bool = False):
 
 
 # ─────────────────────────────────────────────────
-# WATCH MODE
+# STATE TRIGGERS
 # ─────────────────────────────────────────────────
 
-def update_watch(devices: list):
-    """Detect nodes that came online or went offline since last poll."""
-    global prev_online, watch_events
+def update_triggers(devices: list):
+    """Record a timestamped ONLINE/OFFLINE trigger the moment a node changes state."""
+    global prev_online, node_triggers
+    now = datetime.now()
+
     for dev in devices:
-        node_id   = dev.get("id", dev.get("nodeId", ""))
-        name      = (dev.get("hostname") or dev.get("name", "?")).split(".")[0]
+        node_id   = dev.get("id") or dev.get("nodeId") or dev.get("name", "")
         online, _ = is_node_online(dev)
 
-        if node_id in prev_online:
-            was = prev_online[node_id]
-            if online and not was:
-                watch_events.append((datetime.now(), name, "came online", "green"))
-            elif not online and was:
-                watch_events.append((datetime.now(), name, "went offline", "red"))
+        if node_id in prev_online and prev_online[node_id] != online:
+            label = "ONLINE" if online else "OFFLINE"
+            color = "bold green" if online else "bold red"
+            node_triggers[node_id] = {"label": label, "color": color, "ts": now}
 
         prev_online[node_id] = online
-
-    watch_events = watch_events[-20:]
 
 
 # ─────────────────────────────────────────────────
@@ -500,7 +496,7 @@ def build_devices_table(devices: list) -> Table:
                   header_style="bold cyan", border_style="dim cyan",
                   expand=True, padding=(0, 1))
 
-    table.add_column("Status",       width=9,  no_wrap=True)
+    table.add_column("Status",       width=18, no_wrap=True)
     table.add_column("Device",       min_width=14, no_wrap=True)
     table.add_column("OS",           width=8,  no_wrap=True)
     table.add_column("Tailscale IP", width=15, no_wrap=True)
@@ -521,8 +517,10 @@ def build_devices_table(devices: list) -> Table:
 
     all_rows = online_rows + offline_rows
     sep_at   = len(online_rows) - 1
+    now      = datetime.now()
 
     for idx, (dev, online, ls_human) in enumerate(all_rows):
+        node_id   = dev.get("id") or dev.get("nodeId") or dev.get("name", "")
         real_name = (dev.get("hostname") or dev.get("name", "?")).split(".")[0]
         real_ip   = format_ip(dev.get("addresses", []))
         disp_name, disp_ip = display_node(real_name, real_ip, idx)
@@ -536,17 +534,19 @@ def build_devices_table(devices: list) -> Table:
         upd      = dev.get("updateAvailable", False)
         shield   = dev.get("blocksIncomingConnections", False)
 
-        just_changed = any(e[1] == real_name for e in watch_events[-3:]) if watch_events else False
+        trig   = node_triggers.get(node_id)
+        recent = trig is not None and (now - trig["ts"]).total_seconds() <= TRIGGER_TTL_S
 
-        if online:
+        if recent:
+            ts_short = trig["ts"].strftime("%H:%M:%S")
+            st = Text(f"⚡ {trig['label']} {ts_short}", style=trig["color"])
+        elif online:
             st = Text("● ONLINE", style="bold green")
         else:
             st = Text("○ offline", style="dim red")
-        if just_changed:
-            st = Text("◉ CHANGE!", style="bold yellow")
 
         nm = Text()
-        if just_changed:
+        if recent:
             nm.append(disp_name, style="bold yellow")
         elif online:
             nm.append(disp_name, style="bold white")
@@ -624,20 +624,6 @@ def build_devices_table(devices: list) -> Table:
     return table
 
 
-def build_watch_panel() -> Panel:
-    if not watch_events:
-        t = Text("  No state changes detected yet", style="dim")
-    else:
-        t = Text()
-        for ts, real_name, event, color in reversed(watch_events[-8:]):
-            shown_name = _demo_name_map.get(real_name, "demo-node") if DEMO_MODE else real_name
-            ts_str = ts.strftime("%H:%M:%S")
-            t.append(f"  {ts_str}  ", style="dim")
-            t.append(f"{shown_name:<20}", style="bold white")
-            t.append(f"  {event}\n", style=f"bold {color}")
-    return Panel(t, title="[cyan]Watch Events[/cyan]", border_style="cyan")
-
-
 def build_display(devices: list, status_msg: str) -> Group:
     online_count = sum(1 for d in devices if is_node_online(d)[0])
     return Group(
@@ -645,8 +631,6 @@ def build_display(devices: list, status_msg: str) -> Group:
         Columns(build_summary_panels(devices), expand=False),
         Rule(style="dim cyan"),
         build_devices_table(devices),
-        Rule(style="dim cyan"),
-        build_watch_panel(),
         Rule(style="dim cyan"),
         Text(
             f"  Refreshing every {REFRESH_SECONDS}s  ·  Ctrl+C to quit  ·  {status_msg}",
@@ -711,7 +695,8 @@ def main():
                 time.sleep(REFRESH_SECONDS)
                 continue
 
-            update_watch(devices)
+            update_triggers(devices)
+            live.update(build_display(devices, status), refresh=True)
 
             online_ips = []
             for dev in devices:
