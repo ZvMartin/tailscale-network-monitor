@@ -4,10 +4,10 @@ Copyright (c) 2026 Zachary V. Martin, CC
 
 Real-time terminal dashboard for monitoring Tailscale tailnet nodes, latency (`ping`), live `tx`/`rx` throughput and DERP-vs-direct routing hints via Tailscale's local Prometheus `/metrics` endpoint (`:5252`), and instant online/offline state triggers using `rich`.
 
-!\[TS-MON v3 Demo Screenshot 1\](docs/screenshot-demo_1.png)
+![TS-MON v3 Demo Screenshot 1](docs/screenshot-demo_1.png)
 
 
-!\[TS-MON v3 Demo Screenshot 2\](docs/screenshot-demo_2.png)
+![TS-MON v3 Demo Screenshot 2](docs/screenshot-demo_2.png)
 
 ## Features
 
