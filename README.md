@@ -12,6 +12,7 @@ Real-time terminal dashboard for monitoring Tailscale tailnet nodes, latency (`p
 ## Quick Setup
 
 1. Clone the repository:
+
    ```bash
    git clone [https://github.com/ZvMartin/tailscale-network-monitor.git](https://github.com/ZvMartin/tailscale-network-monitor.git)
    cd tailscale-network-monitor
